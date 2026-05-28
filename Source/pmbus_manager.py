@@ -1,13 +1,22 @@
 from commands import *
 from pmbus import PMBusDevice
 from decode import decode_linear_format, linear16_to_float
+from machine import Pin
 import time
 
 class PMBusManager:
+    GPIO_PINS = tuple(list(range(0, 23)) + [25, 26, 27, 28])
+
     def __init__(self, i2c):
         self.device = PMBusDevice(i2c)
         self.pmbus_addr = None
         self.eeprom_addr = None
+        self.reserved_gpio = {
+            0: "I2C SDA",
+            1: "I2C SCL",
+        }
+        self.gpio_pins = {}
+        self.gpio_modes = {}
 
     def set_pmbus_addr(self, addr):
         self.pmbus_addr = addr
@@ -138,6 +147,136 @@ class PMBusManager:
                 print(f"Found device at 0x{addr:02X}")
         else:
             print("No devices found.")
+
+    def gpio_occupied(self):
+        occupied = dict(self.reserved_gpio)
+        for pin, mode in self.gpio_modes.items():
+            occupied[pin] = mode
+        return occupied
+
+    def print_free_gpio(self):
+        occupied = self.gpio_occupied()
+        free = [pin for pin in self.GPIO_PINS if pin not in occupied]
+        print("Free GPIO pins: " + (", ".join(str(pin) for pin in free) if free else "none"))
+        print("Occupied GPIO pins:")
+        for pin in sorted(occupied):
+            print(f"  GPIO {pin:<2} - {occupied[pin]}")
+
+    def parse_gpio_pin(self, value):
+        try:
+            pin = int(value, 0)
+        except ValueError:
+            print("[!] GPIO pin must be a number.")
+            return None
+
+        if pin not in self.GPIO_PINS:
+            print("[!] Unsupported GPIO pin. Use GPIO 0-22 or 25-28.")
+            return None
+        return pin
+
+    def gpio_pull(self, value):
+        if value in ("none", "nopull", "off"):
+            return None
+        if value in ("up", "pullup"):
+            return Pin.PULL_UP
+        if value in ("down", "pulldown"):
+            return Pin.PULL_DOWN
+        print("[!] Pull must be one of: none, pullup, pulldown.")
+        return False
+
+    def handle_gpio_command(self, cmd):
+        parts = cmd.split()
+        if len(parts) < 2:
+            print("Usage: gpio free | gpio use <pin> <in|out> [pullup|pulldown|none|0|1] | gpio read <pin> | gpio write <pin> <0|1> | gpio release <pin>")
+            return
+
+        action = parts[1]
+
+        if action == "free":
+            self.print_free_gpio()
+            return
+
+        if action in ("use", "read", "write", "release"):
+            if len(parts) < 3:
+                print(f"Usage: gpio {action} <pin>")
+                return
+            pin_num = self.parse_gpio_pin(parts[2])
+            if pin_num is None:
+                return
+        else:
+            print("Unknown GPIO command. Type 'help' for list of commands.")
+            return
+
+        if action == "use":
+            if len(parts) < 4:
+                print("Usage: gpio use <pin> <in|out> [pullup|pulldown|none|0|1]")
+                return
+            if pin_num in self.gpio_occupied():
+                print(f"[!] GPIO {pin_num} is already occupied by {self.gpio_occupied()[pin_num]}.")
+                return
+
+            mode = parts[3]
+            if mode in ("in", "input"):
+                pull = None
+                pull_name = "none"
+                if len(parts) >= 5:
+                    pull = self.gpio_pull(parts[4])
+                    if pull is False:
+                        return
+                    pull_name = parts[4]
+                self.gpio_pins[pin_num] = Pin(pin_num, Pin.IN, pull)
+                self.gpio_modes[pin_num] = f"input ({pull_name})"
+                print(f"GPIO {pin_num} configured as input ({pull_name}).")
+            elif mode in ("out", "output"):
+                initial = 0
+                if len(parts) >= 5:
+                    try:
+                        initial = int(parts[4])
+                    except ValueError:
+                        print("[!] Output value must be 0 or 1.")
+                        return
+                    if initial not in (0, 1):
+                        print("[!] Output value must be 0 or 1.")
+                        return
+                self.gpio_pins[pin_num] = Pin(pin_num, Pin.OUT, value=initial)
+                self.gpio_modes[pin_num] = "output"
+                print(f"GPIO {pin_num} configured as output, value={initial}.")
+            else:
+                print("Usage: gpio use <pin> <in|out> [pullup|pulldown|none|0|1]")
+            return
+
+        if pin_num in self.reserved_gpio:
+            print(f"[!] GPIO {pin_num} is reserved for {self.reserved_gpio[pin_num]}.")
+            return
+
+        pin = self.gpio_pins.get(pin_num)
+        if pin is None:
+            print(f"[!] GPIO {pin_num} is not configured. Use 'gpio use {pin_num} <in|out>' first.")
+            return
+
+        if action == "read":
+            print(f"GPIO {pin_num}: {pin.value()}")
+        elif action == "write":
+            if len(parts) != 4:
+                print("Usage: gpio write <pin> <0|1>")
+                return
+            if self.gpio_modes.get(pin_num) != "output":
+                print(f"[!] GPIO {pin_num} is not configured as output.")
+                return
+            try:
+                value = int(parts[3])
+            except ValueError:
+                print("[!] GPIO value must be 0 or 1.")
+                return
+            if value not in (0, 1):
+                print("[!] GPIO value must be 0 or 1.")
+                return
+            pin.value(value)
+            print(f"GPIO {pin_num} set to {value}.")
+        elif action == "release":
+            del self.gpio_pins[pin_num]
+            del self.gpio_modes[pin_num]
+            print(f"GPIO {pin_num} released.")
     
     def is_pmbus_set(self):
         if self.pmbus_addr is None:
@@ -195,6 +334,8 @@ class PMBusManager:
             elif cmd == "showaddr":
                 print(f"PMBus address : 0x{self.pmbus_addr:02X}" if self.pmbus_addr else "PMBus address not set")
                 print(f"EEPROM address: 0x{self.eeprom_addr:02X}" if self.eeprom_addr else "EEPROM address not set")
+            elif cmd.startswith("gpio"):
+                self.handle_gpio_command(cmd)
             elif cmd.startswith("read "):
                 parts = cmd.split()
                 if len(parts) == 3:
@@ -223,6 +364,11 @@ class PMBusManager:
                 print("  check <cmd>         - check if a command code is supported by device")
                 print("  readpec <reg> <len>       - read with PEC")
                 print("  writepec <reg> <val1>...  - write with PEC")
+                print("  gpio free          - show free and occupied GPIO pins")
+                print("  gpio use <pin> <in|out> [pullup|pulldown|none|0|1] - configure a free GPIO")
+                print("  gpio read <pin>    - read configured GPIO state")
+                print("  gpio write <pin> <0|1> - set configured output GPIO")
+                print("  gpio release <pin> - release configured GPIO")
                 print("  exit               - exit the console")
             elif cmd in all_cmds:
                 self.read_and_print(all_cmds[cmd])

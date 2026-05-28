@@ -15,6 +15,21 @@
     GND — общий с устройством
 - Интерфейс управления: USB CDC (терминал через виртуальный COM-порт)
 
+## Загрузка файлов на Raspberry Pi Pico
+
+Для загрузки файлов из папки `Source` в корень файловой системы Pico используется `upload_to_pico.bat`.
+Перед запуском должен быть установлен `mpremote`:
+
+```
+py -m pip install mpremote
+```
+
+Пример загрузки на устройство с портом `COM3`:
+
+```
+upload_to_pico.bat COM3
+```
+
 ## Command Line Interface (CLI)
 
 После запуска на Pico появляется CLI-интерфейс. Ниже список доступных команд:
@@ -35,6 +50,19 @@ read <reg> <len>          - прочитать <len> байт из регист�
 write <reg> <val1> ...    - записать значения в регистр
 readpec <reg> <len>       - чтение с PEC (Packet Error Checking)
 writepec <reg> <val1> ... - запись с PEC
+```
+
+### Управление GPIO
+GPIO 0 и GPIO 1 заняты I2C-шиной (SDA/SCL) и недоступны для назначения через CLI.
+
+```
+gpio free                 - показать свободные и занятые GPIO
+gpio use <pin> in [pullup|pulldown|none]
+                          - назначить свободный GPIO как вход
+gpio use <pin> out [0|1]  - назначить свободный GPIO как выход с начальным состоянием
+gpio read <pin>           - прочитать состояние назначенного GPIO
+gpio write <pin> <0|1>    - установить состояние GPIO, назначенного как выход
+gpio release <pin>        - освободить ранее назначенный GPIO
 ```
 
 ### Диагностика и чтение параметров блоков питания CRPS
