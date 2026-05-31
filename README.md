@@ -42,6 +42,8 @@ scan                      - просканировать I2C-шину и выв�
 showaddr                  - показать текущие адреса PMBus и EEPROM
 addr pmbus <hex>          - установить адрес PMBus устройства 
 addr eeprom <hex>         - установить адрес EEPROM 
+i2c freq                  - показать текущую частоту I2C
+i2c freq <hz>             - установить частоту I2C в Гц
 ```
 
 ### Низкоуровневый доступ
@@ -57,9 +59,11 @@ GPIO 0 и GPIO 1 заняты I2C-шиной (SDA/SCL) и недоступны �
 
 ```
 gpio free                 - показать свободные и занятые GPIO
-gpio use <pin> in [pullup|pulldown|none]
+gpio use <pin> in [pullup|pulldown|none] [as <name>]
                           - назначить свободный GPIO как вход
-gpio use <pin> out [0|1]  - назначить свободный GPIO как выход с начальным состоянием
+gpio use <pin> out [0|1] [as <name>]
+                          - назначить свободный GPIO как выход с начальным состоянием
+gpio name <pin> <name>    - задать или изменить имя назначенного GPIO
 gpio read <pin>           - прочитать состояние назначенного GPIO
 gpio write <pin> <0|1>    - установить состояние GPIO, назначенного как выход
 gpio release <pin>        - освободить ранее назначенный GPIO

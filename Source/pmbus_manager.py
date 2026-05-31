@@ -1,7 +1,7 @@
 from commands import *
 from pmbus import PMBusDevice
 from decode import decode_linear_format, linear16_to_float
-from machine import Pin
+from machine import I2C, Pin
 import time
 
 class PMBusManager:
@@ -17,6 +17,8 @@ class PMBusManager:
         }
         self.gpio_pins = {}
         self.gpio_modes = {}
+        self.gpio_names = {}
+        self.i2c_freq = 50000
 
     def set_pmbus_addr(self, addr):
         self.pmbus_addr = addr
@@ -148,10 +150,42 @@ class PMBusManager:
         else:
             print("No devices found.")
 
+    def set_i2c_freq(self, freq):
+        if freq <= 0:
+            print("[!] I2C frequency must be greater than 0.")
+            return
+        try:
+            self.device.i2c.init(freq=freq)
+        except Exception as e:
+            try:
+                self.device.i2c = I2C(0, scl=Pin(1), sda=Pin(0), freq=freq)
+            except Exception as recreate_error:
+                print("I2C frequency change failed:", e)
+                print("I2C re-create failed:", recreate_error)
+                return
+        self.i2c_freq = freq
+        print(f"I2C frequency set to {freq} Hz.")
+
+    def handle_i2c_command(self, cmd):
+        parts = cmd.split()
+        if len(parts) == 2 and parts[1] == "freq":
+            print(f"I2C frequency: {self.i2c_freq} Hz")
+            return
+        if len(parts) == 3 and parts[1] == "freq":
+            try:
+                freq = int(parts[2], 0)
+            except ValueError:
+                print("[!] I2C frequency must be a number in Hz.")
+                return
+            self.set_i2c_freq(freq)
+            return
+        print("Usage: i2c freq | i2c freq <hz>")
+
     def gpio_occupied(self):
         occupied = dict(self.reserved_gpio)
         for pin, mode in self.gpio_modes.items():
-            occupied[pin] = mode
+            name = self.gpio_names.get(pin)
+            occupied[pin] = f"{mode}, name={name}" if name else mode
         return occupied
 
     def print_free_gpio(self):
@@ -184,10 +218,20 @@ class PMBusManager:
         print("[!] Pull must be one of: none, pullup, pulldown.")
         return False
 
+    def gpio_name_from_parts(self, raw_parts, parts, start_index):
+        if "as" not in parts[start_index:]:
+            return None
+        as_index = parts.index("as", start_index)
+        if as_index + 1 >= len(raw_parts):
+            print("[!] GPIO name cannot be empty.")
+            return False
+        return " ".join(raw_parts[as_index + 1:])
+
     def handle_gpio_command(self, cmd):
-        parts = cmd.split()
+        raw_parts = cmd.split()
+        parts = [part.lower() for part in raw_parts]
         if len(parts) < 2:
-            print("Usage: gpio free | gpio use <pin> <in|out> [pullup|pulldown|none|0|1] | gpio read <pin> | gpio write <pin> <0|1> | gpio release <pin>")
+            print("Usage: gpio free | gpio use <pin> <in|out> [pullup|pulldown|none|0|1] [as <name>] | gpio name <pin> <name> | gpio read <pin> | gpio write <pin> <0|1> | gpio release <pin>")
             return
 
         action = parts[1]
@@ -196,7 +240,7 @@ class PMBusManager:
             self.print_free_gpio()
             return
 
-        if action in ("use", "read", "write", "release"):
+        if action in ("use", "name", "read", "write", "release"):
             if len(parts) < 3:
                 print(f"Usage: gpio {action} <pin>")
                 return
@@ -209,27 +253,33 @@ class PMBusManager:
 
         if action == "use":
             if len(parts) < 4:
-                print("Usage: gpio use <pin> <in|out> [pullup|pulldown|none|0|1]")
+                print("Usage: gpio use <pin> <in|out> [pullup|pulldown|none|0|1] [as <name>]")
                 return
             if pin_num in self.gpio_occupied():
                 print(f"[!] GPIO {pin_num} is already occupied by {self.gpio_occupied()[pin_num]}.")
                 return
 
             mode = parts[3]
+            name = self.gpio_name_from_parts(raw_parts, parts, 4)
+            if name is False:
+                return
+            option_end = parts.index("as", 4) if "as" in parts[4:] else len(parts)
             if mode in ("in", "input"):
                 pull = None
                 pull_name = "none"
-                if len(parts) >= 5:
+                if option_end >= 5:
                     pull = self.gpio_pull(parts[4])
                     if pull is False:
                         return
                     pull_name = parts[4]
                 self.gpio_pins[pin_num] = Pin(pin_num, Pin.IN, pull)
                 self.gpio_modes[pin_num] = f"input ({pull_name})"
-                print(f"GPIO {pin_num} configured as input ({pull_name}).")
+                if name:
+                    self.gpio_names[pin_num] = name
+                print(f"GPIO {pin_num} configured as input ({pull_name})" + (f", name={name}." if name else "."))
             elif mode in ("out", "output"):
                 initial = 0
-                if len(parts) >= 5:
+                if option_end >= 5:
                     try:
                         initial = int(parts[4])
                     except ValueError:
@@ -240,9 +290,11 @@ class PMBusManager:
                         return
                 self.gpio_pins[pin_num] = Pin(pin_num, Pin.OUT, value=initial)
                 self.gpio_modes[pin_num] = "output"
-                print(f"GPIO {pin_num} configured as output, value={initial}.")
+                if name:
+                    self.gpio_names[pin_num] = name
+                print(f"GPIO {pin_num} configured as output, value={initial}" + (f", name={name}." if name else "."))
             else:
-                print("Usage: gpio use <pin> <in|out> [pullup|pulldown|none|0|1]")
+                print("Usage: gpio use <pin> <in|out> [pullup|pulldown|none|0|1] [as <name>]")
             return
 
         if pin_num in self.reserved_gpio:
@@ -254,7 +306,14 @@ class PMBusManager:
             print(f"[!] GPIO {pin_num} is not configured. Use 'gpio use {pin_num} <in|out>' first.")
             return
 
-        if action == "read":
+        if action == "name":
+            if len(raw_parts) < 4:
+                print("Usage: gpio name <pin> <name>")
+                return
+            name = " ".join(raw_parts[3:])
+            self.gpio_names[pin_num] = name
+            print(f"GPIO {pin_num} name set to {name}.")
+        elif action == "read":
             print(f"GPIO {pin_num}: {pin.value()}")
         elif action == "write":
             if len(parts) != 4:
@@ -276,6 +335,8 @@ class PMBusManager:
         elif action == "release":
             del self.gpio_pins[pin_num]
             del self.gpio_modes[pin_num]
+            if pin_num in self.gpio_names:
+                del self.gpio_names[pin_num]
             print(f"GPIO {pin_num} released.")
     
     def is_pmbus_set(self):
@@ -301,7 +362,8 @@ class PMBusManager:
         print("PMBus console. Type 'help' for available commands.")
 
         while True:
-            cmd = input("\n> ").strip().lower()
+            raw_cmd = input("\n> ").strip()
+            cmd = raw_cmd.lower()
 
             needs_pmbus = (
                 cmd in ["params", "status"] or
@@ -334,8 +396,10 @@ class PMBusManager:
             elif cmd == "showaddr":
                 print(f"PMBus address : 0x{self.pmbus_addr:02X}" if self.pmbus_addr else "PMBus address not set")
                 print(f"EEPROM address: 0x{self.eeprom_addr:02X}" if self.eeprom_addr else "EEPROM address not set")
+            elif cmd.startswith("i2c"):
+                self.handle_i2c_command(cmd)
             elif cmd.startswith("gpio"):
-                self.handle_gpio_command(cmd)
+                self.handle_gpio_command(raw_cmd)
             elif cmd.startswith("read "):
                 parts = cmd.split()
                 if len(parts) == 3:
@@ -358,6 +422,8 @@ class PMBusManager:
                 print("  addr pmbus <hex>   - set PMBus address")
                 print("  addr eeprom <hex>  - set EEPROM address")
                 print("  showaddr           - show current addresses")
+                print("  i2c freq           - show current I2C frequency")
+                print("  i2c freq <hz>      - set I2C frequency in Hz")
                 print("  read <reg> <len>   - read <len> bytes from <reg> (hex)")
                 print("  write <reg> <val1> [val2 ...] - write bytes to register")
                 print("  scan               - scan and list devices on I2C bus")
@@ -365,7 +431,8 @@ class PMBusManager:
                 print("  readpec <reg> <len>       - read with PEC")
                 print("  writepec <reg> <val1>...  - write with PEC")
                 print("  gpio free          - show free and occupied GPIO pins")
-                print("  gpio use <pin> <in|out> [pullup|pulldown|none|0|1] - configure a free GPIO")
+                print("  gpio use <pin> <in|out> [pullup|pulldown|none|0|1] [as <name>] - configure GPIO")
+                print("  gpio name <pin> <name> - set configured GPIO name")
                 print("  gpio read <pin>    - read configured GPIO state")
                 print("  gpio write <pin> <0|1> - set configured output GPIO")
                 print("  gpio release <pin> - release configured GPIO")
