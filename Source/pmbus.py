@@ -118,3 +118,60 @@ class PMBusDevice:
             return self.i2c.readfrom(self.addr, 4)
         except Exception as e:
             print(f"Read PAGE PLUS READ ERROR {e}")
+
+    def read_eeprom(self, eeprom_addr, offset, length):
+        """Read `length` bytes from EEPROM starting at `offset`.
+
+        Uses single-byte memory address (AT24C02C style).
+        """
+        try:
+            # Many MicroPython ports implement readfrom_mem
+            return self.i2c.readfrom_mem(eeprom_addr, offset & 0xFF, length)
+        except Exception as e:
+            try:
+                # fallback: write offset then read
+                self.i2c.writeto(eeprom_addr, bytes([offset & 0xFF]))
+                return self.i2c.readfrom(eeprom_addr, length)
+            except Exception as e2:
+                print("EEPROM read error:", e, e2)
+                return None
+
+    def write_eeprom(self, eeprom_addr, data: bytes, page_size=8, write_delay_ms=10):
+        """Write `data` to EEPROM at `eeprom_addr` page-by-page (ACK-polling).
+
+        Returns True on success, False on failure.
+        """
+        if not isinstance(data, (bytes, bytearray)):
+            raise TypeError("data must be bytes or bytearray")
+        if len(data) > 256:
+            raise ValueError("data too large for AT24C02 (max 256 bytes)")
+
+        for offset in range(0, len(data), page_size):
+            page = data[offset:offset + page_size]
+            mem_addr = offset & 0xFF
+            buf = bytes([mem_addr]) + page
+            try:
+                self.i2c.writeto(eeprom_addr, buf)
+            except Exception as e:
+                print(f"EEPROM write error at 0x{mem_addr:02X}:", e)
+                return False
+
+            # ACK polling: try to contact device until it acknowledges
+            start = time.ticks_ms()
+            while True:
+                try:
+                    # try a zero-length write (some ports allow it) as poll
+                    try:
+                        self.i2c.writeto(eeprom_addr, b'')
+                        break
+                    except Exception:
+                        # fallback to a single-byte read to poll ACK
+                        self.i2c.readfrom(eeprom_addr, 1)
+                        break
+                except Exception:
+                    if time.ticks_diff(time.ticks_ms(), start) > 1000:
+                        print("EEPROM ack poll timeout")
+                        return False
+                    time.sleep_ms(write_delay_ms)
+
+        return True

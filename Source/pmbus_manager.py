@@ -2,6 +2,7 @@ from commands import *
 from pmbus import PMBusDevice
 from decode import decode_linear_format, linear16_to_float
 from machine import I2C, Pin
+import fru_map
 import time
 
 class PMBusManager:
@@ -398,6 +399,63 @@ class PMBusManager:
                 print(f"EEPROM address: 0x{self.eeprom_addr:02X}" if self.eeprom_addr else "EEPROM address not set")
             elif cmd.startswith("i2c"):
                 self.handle_i2c_command(cmd)
+            elif cmd == "writefru":
+                if not self.eeprom_addr:
+                    print("[!] EEPROM address not set. Use 'addr eeprom <hex>' to set it.")
+                    continue
+                print("Writing FRU image to EEPROM...")
+                img = fru_map.get_image()
+                success = self.device.write_eeprom(self.eeprom_addr, img, page_size=8)
+                print("FRU write complete" if success else "[ERROR] FRU write failed")
+            elif cmd == "verifyfru":
+                if not self.eeprom_addr:
+                    print("[!] EEPROM address not set. Use 'addr eeprom <hex>' to set it.")
+                    continue
+                expected = fru_map.get_image()
+                data = self.device.read_eeprom(self.eeprom_addr, 0, len(expected))
+                if data is None:
+                    print("[ERROR] EEPROM read failed")
+                elif bytes(data) == expected:
+                    print("FRU verify OK — contents match")
+                else:
+                    print("FRU verify FAILED — mismatch detected")
+            elif cmd.startswith("fru set "):
+                parts = raw_cmd.split()
+                if len(parts) >= 4:
+                    field = parts[2]
+                    value = " ".join(parts[3:])
+                    try:
+                        normalized = fru_map.set_field(field, value)
+                        print(f"FRU field '{normalized}' set.")
+                    except KeyError:
+                        print("Unknown FRU field. Use 'fru fields' to list supported fields.")
+                    except Exception as e:
+                        print(f"Invalid value for FRU field '{field}': {e}")
+                else:
+                    print("Usage: fru set <field> <value>")
+            elif cmd == "fru fields":
+                print("Supported FRU fields:")
+                for field, description in fru_map.field_help():
+                    print(f"  {field:<38} {description}")
+            elif cmd == "fru read":
+                print("Current FRU image fields:")
+                for info in fru_map.field_values():
+                    print(f"  {info['name']:<38} {info['address']:<13} raw={info['raw']:<8} value={info['value']}")
+            elif cmd == "fru read eeprom":
+                if not self.eeprom_addr:
+                    print("[!] EEPROM address not set. Use 'addr eeprom <hex>' to set it.")
+                    continue
+                data = self.device.read_eeprom(self.eeprom_addr, 0, len(fru_map.get_image()))
+                if data is None:
+                    print("[ERROR] EEPROM read failed")
+                    continue
+                print("EEPROM FRU fields:")
+                for info in fru_map.field_values(data):
+                    print(f"  {info['name']:<38} {info['address']:<13} raw={info['raw']:<8} value={info['value']}")
+            elif cmd == "fru checksum":
+                checks = fru_map.validate_checksums()
+                for name in sorted(checks):
+                    print(f"{name:<15}: {'OK' if checks[name] else 'FAIL'}")
             elif cmd.startswith("gpio"):
                 self.handle_gpio_command(raw_cmd)
             elif cmd.startswith("read "):
@@ -426,6 +484,13 @@ class PMBusManager:
                 print("  i2c freq <hz>      - set I2C frequency in Hz")
                 print("  read <reg> <len>   - read <len> bytes from <reg> (hex)")
                 print("  write <reg> <val1> [val2 ...] - write bytes to register")
+                print("  fru fields         - list writable FRU fields with addresses")
+                print("  fru read           - decode all fields from current FRU image")
+                print("  fru read eeprom    - decode all fields from EEPROM")
+                print("  fru set <field> <value> - set one FRU field in RAM image")
+                print("  fru checksum       - validate FRU image checksums")
+                print("  writefru           - write current FRU image to EEPROM")
+                print("  verifyfru          - compare EEPROM with current FRU image")
                 print("  scan               - scan and list devices on I2C bus")
                 print("  check <cmd>         - check if a command code is supported by device")
                 print("  readpec <reg> <len>       - read with PEC")
