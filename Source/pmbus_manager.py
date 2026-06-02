@@ -45,13 +45,16 @@ class PMBusManager:
                                MFR_VOUT_MAX,
                                READ_VSB_OUT]:
                         exp_data = self.device.read_bytes(VOUT_MODE.code, 1)
-                        exponent_raw = int.from_bytes(exp_data, 'little')
-                        exponent = exponent_raw & 0x1F
-                        if exponent > 15:
-                            exponent -= 32
-                        lsb = data[0]
-                        msb = data[1]
-                        value = linear16_to_float( lsb | (msb << 8) , exponent)
+                        if exp_data:
+                            exponent_raw = int.from_bytes(exp_data, 'little')
+                            exponent = exponent_raw & 0x1F
+                            if exponent > 15:
+                                exponent -= 32
+                            lsb = data[0]
+                            msb = data[1]
+                            value = linear16_to_float( lsb | (msb << 8) , exponent)
+                        else:
+                            value = None
                     else:       
                         value = decode_linear_format(data[0], data[1])
             else:
@@ -80,6 +83,9 @@ class PMBusManager:
             print(f"{cmd.name:<25}: {value}")
 
     def decode_status(self, name, data, bit_defs):
+        if not data:
+            print(f"Decoded {name}: [ERROR]")
+            return
         byte = data[0] if len(data) == 1 else (data[1] << 8 | data[0])
         print(f"Decoded {name}:")
         for bit, label in bit_defs.items():
@@ -144,7 +150,11 @@ class PMBusManager:
             
     def scan_bus(self):
         print("Scanning I2C bus...")
-        found = self.device.i2c.scan()
+        try:
+            found = self.device.i2c.scan()
+        except Exception as e:
+            print("[ERROR] I2C scan failed:", e)
+            return
         if found:
             for addr in found:
                 print(f"Found device at 0x{addr:02X}")
@@ -386,12 +396,19 @@ class PMBusManager:
             elif cmd.startswith("addr"):
                 parts = cmd.split()
                 if len(parts) == 3:
+                    try:
+                        addr = int(parts[2], 16)
+                    except ValueError:
+                        print("[!] Address must be a hex number, for example: 5A")
+                        continue
                     if parts[1] == "pmbus":
-                        self.set_pmbus_addr(int(parts[2], 16))
+                        self.set_pmbus_addr(addr)
                         print(f"PMBus address set to 0x{self.pmbus_addr:02X}")
                     elif parts[1] == "eeprom":
-                        self.set_eeprom_addr(int(parts[2], 16))
+                        self.set_eeprom_addr(addr)
                         print(f"EEPROM address set to 0x{self.eeprom_addr:02X}")
+                    else:
+                        print("Usage: addr pmbus <hex> or addr eeprom <hex>")
                 else:
                     print("Usage: addr pmbus <hex> or addr eeprom <hex>")
             elif cmd == "showaddr":
@@ -457,19 +474,30 @@ class PMBusManager:
                 for name in sorted(checks):
                     print(f"{name:<15}: {'OK' if checks[name] else 'FAIL'}")
             elif cmd.startswith("gpio"):
-                self.handle_gpio_command(raw_cmd)
+                try:
+                    self.handle_gpio_command(raw_cmd)
+                except Exception as e:
+                    print("[ERROR] GPIO command failed:", e)
             elif cmd.startswith("read "):
                 parts = cmd.split()
                 if len(parts) == 3:
-                    reg = int(parts[1], 16)
-                    length = int(parts[2])
+                    try:
+                        reg = int(parts[1], 16)
+                        length = int(parts[2])
+                    except ValueError:
+                        print("Usage: read <reg> <len>")
+                        continue
                     data = self.device.read_bytes(reg, length)
                     print(f"Data: {data}")
             elif cmd.startswith("write "):
                 parts = cmd.split()
                 if len(parts) >= 3:
-                    reg = int(parts[1], 16)
-                    values = [int(v, 16) for v in parts[2:]]
+                    try:
+                        reg = int(parts[1], 16)
+                        values = [int(v, 16) for v in parts[2:]]
+                    except ValueError:
+                        print("Usage: write <reg> <val1> [val2 ...]")
+                        continue
                     self.device.write_bytes(reg, values, len(values))
                     print("Write complete")
             elif cmd == "help":
@@ -522,21 +550,35 @@ class PMBusManager:
             elif cmd.startswith("readpec "):
                 parts = cmd.split()
                 if len(parts) == 3:
-                    reg = int(parts[1], 16)
-                    length = int(parts[2])
+                    try:
+                        reg = int(parts[1], 16)
+                        length = int(parts[2])
+                    except ValueError:
+                        print("Usage: readpec <reg> <len>")
+                        continue
                     data = self.device.read_bytes_with_pec(reg, length)
                     print(f"Data: {list(data) if data else '[ERROR]'}")
             elif cmd.startswith("writepec "):
                 parts = cmd.split()
                 if len(parts) >= 3:
-                    reg = int(parts[1], 16)
-                    values = [int(v, 16) for v in parts[2:]]
+                    try:
+                        reg = int(parts[1], 16)
+                        values = [int(v, 16) for v in parts[2:]]
+                    except ValueError:
+                        print("Usage: writepec <reg> <val1>...")
+                        continue
                     success = self.device.write_bytes_with_pec(reg, values, len(values))
                     print("Write complete" if success else "[ERROR] Write failed")
             elif cmd.startswith("read_page_plus "):
                 parts = cmd.split()
-                print(parts)
-                values = [int(v, 16) for v in parts[1:]]
+                if len(parts) != 4:
+                    print("Usage: read_page_plus <byte_count> <page> <command>")
+                    continue
+                try:
+                    values = [int(v, 16) for v in parts[1:]]
+                except ValueError:
+                    print("Usage: read_page_plus <byte_count> <page> <command>")
+                    continue
                 byte_count, page, command = values
                 response = self.device.page_plus_read(byte_count, page, command)
                 print(f"PAGE_PLUS_READ Response {response}")
