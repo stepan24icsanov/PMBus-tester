@@ -28,6 +28,30 @@ class PMBusManager:
     def set_eeprom_addr(self, addr):
         self.eeprom_addr = addr
 
+    def _parse_fru_set_command(self, raw_cmd):
+        text = raw_cmd.lstrip()
+        lower = text.lower()
+        prefix = "fru set "
+        if not lower.startswith(prefix):
+            return None, None
+
+        pos = len(prefix)
+        while pos < len(text) and text[pos].isspace():
+            pos += 1
+        field_start = pos
+        while pos < len(text) and not text[pos].isspace():
+            pos += 1
+        field = text[field_start:pos]
+        if not field:
+            return None, None
+        if pos >= len(text):
+            return field, None
+
+        # Consume only the mandatory separator after the field. Any additional
+        # spaces belong to the FRU string and must be written as data.
+        value = text[pos + 1:]
+        return field, value
+
     def read_and_print(self, cmd: PMBusCommand):
         if cmd.type == "Read Byte" or cmd.size == 1:
             data = self.device.read_bytes(cmd.code, 1)
@@ -373,8 +397,8 @@ class PMBusManager:
         print("PMBus console. Type 'help' for available commands.")
 
         while True:
-            raw_cmd = input("\n> ").strip()
-            cmd = raw_cmd.lower()
+            raw_cmd = input("\n> ")
+            cmd = raw_cmd.strip().lower()
 
             needs_pmbus = (
                 cmd in ["params", "status"] or
@@ -390,8 +414,8 @@ class PMBusManager:
                 self.decode_all_statuses()
             elif cmd == "scan":
                 self.scan_bus()
-            elif cmd == "exit":
-                print("Exiting.")
+            elif cmd in ("exit", "repl"):
+                print("Returning to MicroPython REPL.")
                 break
             elif cmd.startswith("addr"):
                 parts = cmd.split()
@@ -437,10 +461,8 @@ class PMBusManager:
                 else:
                     print("FRU verify FAILED — mismatch detected")
             elif cmd.startswith("fru set "):
-                parts = raw_cmd.split()
-                if len(parts) >= 4:
-                    field = parts[2]
-                    value = " ".join(parts[3:])
+                field, value = self._parse_fru_set_command(raw_cmd)
+                if field is not None and value is not None:
                     try:
                         normalized = fru_map.set_field(field, value)
                         print(f"FRU field '{normalized}' set.")
@@ -529,7 +551,8 @@ class PMBusManager:
                 print("  gpio read <pin>    - read configured GPIO state")
                 print("  gpio write <pin> <0|1> - set configured output GPIO")
                 print("  gpio release <pin> - release configured GPIO")
-                print("  exit               - exit the console")
+                print("  repl               - return to MicroPython REPL")
+                print("  exit               - return to MicroPython REPL")
             elif cmd in all_cmds:
                 self.read_and_print(all_cmds[cmd])
             elif cmd.startswith("check "):

@@ -215,7 +215,7 @@ def _decode_product_area(image):
         if data_offset + size > PRODUCT_CHECKSUM_OFFSET:
             size = max(0, PRODUCT_CHECKSUM_OFFSET - data_offset)
         raw = bytes(image[data_offset:data_offset + size])
-        values[field] = raw.decode("latin-1", "replace").rstrip()
+        values[field] = raw.decode("latin-1", "replace")
         locations[field] = (offset, data_offset, size)
         offset = data_offset + size
     return values, locations
